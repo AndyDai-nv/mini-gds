@@ -15,11 +15,11 @@ from src.loaders import HFLoader, NIXLGDSLoader
 def test_loader(loader_type: str, model_path: str, device: str):
     """Test a specific loader."""
     print("\n" + "="*70)
-    print(f"测试 {loader_type} Loader")
+    print(f"Testing {loader_type} Loader")
     print("="*70)
 
     if not Path(model_path).exists():
-        print(f"✗ 模型不存在: {model_path}")
+        print(f"Model not found: {model_path}")
         return None
 
     torch.cuda.empty_cache()
@@ -35,7 +35,7 @@ def test_loader(loader_type: str, model_path: str, device: str):
     else:  # NIXL
         loader = NIXLGDSLoader(model_path, device=device)
         if not loader.nixl_available:
-            print("✗ NIXL not available")
+            print("NIXL not available")
             return None
         model = loader.load_model(torch_dtype=torch.bfloat16)
 
@@ -48,14 +48,14 @@ def test_loader(loader_type: str, model_path: str, device: str):
     print("\n" + "="*70)
     print(f"{loader_type} Loader Results")
     print("="*70)
-    print(f"✓ 加载时间: {stats['time']:.4f}s")
-    print(f"✓ GPU 内存: {stats['gpu_mem']:.2f} MB")
-    print(f"✓ CPU 内存: {stats['cpu_mem']:.2f} MB")
+    print(f"  Load time:   {stats['time']:.4f}s")
+    print(f"  GPU memory:  {stats['gpu_mem']:.2f} MB")
+    print(f"  CPU memory:  {stats['cpu_mem']:.2f} MB")
     print("="*70)
 
     # Quick inference test
     if loader_type == "HF":
-        print("\n测试推理...")
+        print("\nRunning inference test...")
         loader.test_inference("Hello, what is AI?", max_new_tokens=20)
 
     del model
@@ -105,13 +105,13 @@ def main():
     print("\n" + "="*70)
     print("Loader Performance Comparison")
     print("="*70)
-    print(f"模型: {args.model} ({model_path})")
-    print(f"设备: {args.device}")
+    print(f"Model:   {args.model} ({model_path})")
+    print(f"Device:  {args.device}")
     print(f"Tensors: {info['count']} tensors, {info['size']} total, {info['avg']} avg")
     print("="*70)
 
     if not torch.cuda.is_available():
-        print("\n✗ CUDA not available")
+        print("\nCUDA not available")
         return 1
 
     hf_stats = None
@@ -119,56 +119,56 @@ def main():
 
     # Test HF
     if args.loader in ["hf", "both"]:
-        print("\n提示: 测试前清除缓存以确保冷启动")
+        print("\nNote: Clear page cache before testing for cold start")
         print("  echo 3 | sudo tee /proc/sys/vm/drop_caches")
-        input("\n清除缓存后按Enter继续测试HF...")
+        input("\nPress Enter after clearing cache to test HF...")
         hf_stats = test_loader("HF", model_path, args.device)
         if args.loader == "both":
-            print("\n等待5秒...")
+            print("\nWaiting 5 seconds...")
             time.sleep(5)
 
     # Test NIXL
     if args.loader in ["nixl", "both"]:
         if args.loader == "both":
-            print("\n提示: 再次清除缓存以确保公平对比")
+            print("\nNote: Clear cache again for fair comparison")
             print("  echo 3 | sudo tee /proc/sys/vm/drop_caches")
-            input("\n清除缓存后按Enter继续测试NIXL...")
+            input("\nPress Enter after clearing cache to test NIXL...")
         nixl_stats = test_loader("NIXL", model_path, args.device)
 
     # Comparison
     if hf_stats and nixl_stats:
         print("\n" + "="*70)
-        print("最终对比")
+        print("Final Comparison")
         print("="*70)
 
-        print(f"\n加载时间:")
+        print(f"\nLoad Time:")
         print(f"  HF:   {hf_stats['time']:.4f}s")
         print(f"  NIXL: {nixl_stats['time']:.4f}s")
         ratio = nixl_stats['time'] / hf_stats['time']
         if ratio < 1:
-            print(f"  ✓ NIXL 快 {1/ratio:.2f}x")
+            print(f"  NIXL is {1/ratio:.2f}x faster")
         else:
-            print(f"  {'✓' if ratio < 1.5 else '✗'} NIXL 慢 {ratio:.2f}x")
+            print(f"  NIXL is {ratio:.2f}x slower")
 
-        print(f"\nCPU 内存:")
+        print(f"\nCPU Memory:")
         print(f"  HF:   {hf_stats['cpu_mem']:.2f} MB")
         print(f"  NIXL: {nixl_stats['cpu_mem']:.2f} MB")
         savings = hf_stats['cpu_mem'] - nixl_stats['cpu_mem']
         savings_pct = (savings / hf_stats['cpu_mem']) * 100
-        print(f"  {'✓' if savings > 0 else '✗'} 节省: {savings:.2f} MB ({savings_pct:.1f}%)")
+        print(f"  Savings: {savings:.2f} MB ({savings_pct:.1f}%)")
 
-        print(f"\nGPU 内存:")
+        print(f"\nGPU Memory:")
         print(f"  HF:   {hf_stats['gpu_mem']:.2f} MB")
         print(f"  NIXL: {nixl_stats['gpu_mem']:.2f} MB")
 
-        # Prediction check for 7B
+        # Result for 7B
         if args.model == "7b":
             print("\n" + "="*70)
-            print(f"实际: NIXL {nixl_stats['time']:.2f}s vs HF {hf_stats['time']:.2f}s ", end="")
+            print(f"Result: NIXL {nixl_stats['time']:.2f}s vs HF {hf_stats['time']:.2f}s ", end="")
             if ratio < 1:
-                print(f"(NIXL快{1/ratio:.2f}x) ✓✓✓")
+                print(f"(NIXL {1/ratio:.2f}x faster)")
             else:
-                print(f"(NIXL慢{ratio:.2f}x)")
+                print(f"(NIXL {ratio:.2f}x slower)")
 
         print("="*70)
 

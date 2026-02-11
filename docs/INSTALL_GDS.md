@@ -1,68 +1,68 @@
-# 安装 NVIDIA GPUDirect Storage (GDS)
+# Installing NVIDIA GPUDirect Storage (GDS)
 
-## 系统要求
+## System Requirements
 
-- ✅ Ubuntu 20.04/22.04/24.04
-- ✅ NVIDIA Driver ≥ 515
-- ✅ CUDA ≥ 11.7
-- ✅ NVMe SSD
-- ✅ Root权限
+- Ubuntu 20.04/22.04/24.04
+- NVIDIA Driver >= 515
+- CUDA >= 11.7
+- NVMe SSD
+- Root access
 
-你的系统：
-- OS: Ubuntu 24.04 LTS ✓
-- Driver: 570.211.01 ✓
-- CUDA: 12.8 ✓
-- GPU: RTX 6000 Ada ✓
+Our system:
+- OS: Ubuntu 24.04 LTS
+- Driver: 570.211.01
+- CUDA: 12.8
+- GPU: RTX 6000 Ada
 
-## 快速安装
+## Quick Install
 
-### 方法 1: 自动安装脚本
+### Method 1: Automated Script
 
 ```bash
 sudo bash scripts/install_gds.sh
 ```
 
-### 方法 2: 手动安装
+### Method 2: Manual Installation
 
 ```bash
-# 1. 添加NVIDIA CUDA仓库
+# 1. Add NVIDIA CUDA repository
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt-get update
 
-# 2. 安装GDS
+# 2. Install GDS
 sudo apt-get install -y nvidia-gds
 
-# 3. 加载nvidia-fs驱动
+# 3. Load nvidia-fs driver
 sudo modprobe nvidia-fs
 
-# 4. 验证
+# 4. Verify
 lsmod | grep nvidia_fs
 ```
 
-如果看到 `nvidia_fs`，说明安装成功！
+If you see `nvidia_fs`, the installation was successful!
 
-## 验证安装
+## Verifying Installation
 
-### 1. 检查驱动
+### 1. Check Driver
 
 ```bash
 lsmod | grep nvidia_fs
 ```
 
-**期望输出**：
+**Expected output**:
 ```
 nvidia_fs             331776  0
 nvidia              62464000  183 nvidia_fs,...
 ```
 
-### 2. 运行GDS检查工具
+### 2. Run GDS Check Tool
 
 ```bash
 /usr/local/cuda/gds/tools/gdscheck -p
 ```
 
-**期望输出**：
+**Expected output**:
 ```
 GDS release version: x.x.x.x
 nvidia_fs version:  x.x.x libcufile version: x.x
@@ -76,121 +76,121 @@ SCSI               : Unsupported
 BAR1 Size Check    : PASS
 ```
 
-### 3. 测试真正的GDS
+### 3. Test True GDS
 
-重新运行测试：
+Re-run the tests:
 
 ```bash
-# 重新测试7B模型
+# Re-test 7B model
 python tests/compare.py --model 7b --loader nixl
 ```
 
-**期望结果**（如果GDS工作）：
-- 速度：应该更快（可能1.5-2×）
-- CPU内存：应该节省（不增加1GB）
+**Expected results** (if GDS is working):
+- Speed: should be faster (potentially 1.5-2x)
+- CPU memory: should be lower (no extra 1GB increase)
 
-## 持久化配置
+## Persistent Configuration
 
-确保重启后自动加载：
+Ensure the driver loads automatically after reboot:
 
 ```bash
-# 创建配置文件
+# Create config file
 echo "nvidia-fs" | sudo tee /etc/modules-load.d/nvidia-fs.conf
 
-# 或添加到 /etc/modules
+# Or append to /etc/modules
 echo "nvidia-fs" | sudo tee -a /etc/modules
 ```
 
-## 常见问题
+## Troubleshooting
 
-### Q1: 安装后仍然没有nvidia-fs？
+### Q1: nvidia-fs still missing after installation?
 
 ```bash
-# 检查内核模块路径
+# Check kernel module path
 ls /lib/modules/$(uname -r)/updates/dkms/ | grep nvidia
 
-# 手动加载
+# Manual load
 sudo depmod -a
 sudo modprobe nvidia-fs
 ```
 
 ### Q2: "modprobe: FATAL: Module nvidia-fs not found"
 
-可能原因：
-1. **GDS包未正确安装**
+Possible causes:
+1. **GDS package not properly installed**
    ```bash
    dpkg -l | grep nvidia-gds
    ```
 
-2. **内核头文件缺失**（GDS需要编译DKMS模块）
+2. **Missing kernel headers** (GDS needs to compile DKMS module)
    ```bash
    sudo apt-get install linux-headers-$(uname -r)
    sudo apt-get install --reinstall nvidia-gds
    ```
 
-3. **驱动版本不兼容**
-   - GDS需要 NVIDIA Driver ≥ 515
-   - 你的570.211.01应该没问题
+3. **Driver version incompatible**
+   - GDS requires NVIDIA Driver >= 515
+   - Your 570.211.01 should be fine
 
-### Q3: 安装后CPU内存仍然很高？
+### Q3: CPU memory still high after installation?
 
-1. **验证GDS真的在工作**：
+1. **Verify GDS is actually working**:
    ```bash
-   # 查看cuFile日志
+   # Check cuFile logs
    export CUFILE_ENV_PATH_JSON=/etc/cufile.json
-   # 在cufile.json中启用logging
+   # Enable logging in cufile.json
    ```
 
-2. **检查文件系统支持**：
+2. **Check filesystem support**:
    ```bash
    df -Th models/qwen2.5-7b/
    ```
-   - ext4/xfs: 支持 ✓
-   - 其他: 可能不支持
+   - ext4/xfs: Supported
+   - Others: May not be supported
 
-3. **检查对齐**：
-   - GDS要求4K对齐
-   - safetensors文件应该满足要求
+3. **Check alignment**:
+   - GDS requires 4K alignment
+   - SafeTensors files should meet this requirement
 
-### Q4: 没有root权限怎么办？
+### Q4: No root access?
 
-如果无法安装nvidia-fs：
-- ❌ 无法使用真正的GDS零拷贝
-- ✅ NIXL会自动使用兼容模式
-- ✅ 仍然比HF快（优化的POSIX I/O）
-- ❌ 但CPU内存会增加
+If you cannot install nvidia-fs:
+- Cannot use true GDS zero-copy
+- NIXL will automatically use compatibility mode
+- Still faster than HF (optimized POSIX I/O)
+- But CPU memory will increase
 
-权衡：
-- 有GDS：快1.5-2×，省CPU内存
-- 无GDS：快1.4×，多用1GB CPU
+Trade-offs:
+- With GDS: 1.5-2x faster, saves CPU memory
+- Without GDS: 1.4x faster, uses ~1GB more CPU memory
 
-## 测试对比
+## Benchmark Comparison
 
-### 安装GDS前（兼容模式）
-
-```
-HF:   8.12s,  CPU +252MB
-NIXL: 5.70s,  CPU +1287MB  (快1.42x)
-```
-
-### 安装GDS后（预期）
+### Before GDS Installation (Compatibility Mode)
 
 ```
 HF:   8.12s,  CPU +252MB
-NIXL: 4-5s,   CPU +100-200MB  (快1.6-2x, 省CPU)
+NIXL: 5.70s,  CPU +1287MB  (1.42x faster)
 ```
 
-## 相关资源
+### After GDS Installation (Expected)
 
-- [NVIDIA GDS 文档](https://docs.nvidia.com/gpudirect-storage/)
-- [cuFile API 参考](https://docs.nvidia.com/gpudirect-storage/api-reference-guide/index.html)
-- [GDS 性能调优](https://docs.nvidia.com/gpudirect-storage/troubleshooting-guide/index.html)
+```
+HF:   8.12s,  CPU +252MB
+NIXL: 4-5s,   CPU +100-200MB  (1.6-2x faster, saves CPU)
+```
 
-## 下一步
+## Resources
 
-1. **安装GDS**：`sudo bash scripts/install_gds.sh`
-2. **验证**：`lsmod | grep nvidia_fs`
-3. **重新测试**：`python tests/compare.py --model 7b`
-4. **对比结果**：CPU内存应该大幅降低
+- [NVIDIA GDS Documentation](https://docs.nvidia.com/gpudirect-storage/)
+- [cuFile API Reference](https://docs.nvidia.com/gpudirect-storage/api-reference-guide/index.html)
+- [GDS Performance Tuning](https://docs.nvidia.com/gpudirect-storage/troubleshooting-guide/index.html)
 
-如果安装成功，NIXL GDS将展现真正的价值：**更快的速度 + 节省CPU内存**！
+## Next Steps
+
+1. **Install GDS**: `sudo bash scripts/install_gds.sh`
+2. **Verify**: `lsmod | grep nvidia_fs`
+3. **Re-test**: `python tests/compare.py --model 7b`
+4. **Compare results**: CPU memory should drop significantly
+
+If installation succeeds, NIXL GDS will show its true value: **faster speed + lower CPU memory usage**!

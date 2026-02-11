@@ -37,76 +37,76 @@ def main():
     device = args.device
 
     print("\n" + "="*70)
-    print("测试 NIXL GDS Loader")
+    print("Testing NIXL GDS Loader")
     print("="*70)
-    print(f"模型大小: {args.model}")
-    print(f"模型路径: {model_path}")
-    print(f"设备: {device}")
+    print(f"Model size: {args.model}")
+    print(f"Model path: {model_path}")
+    print(f"Device:     {device}")
     print("="*70)
 
-    # 检查模型路径
+    # Check model path
     if not Path(model_path).exists():
-        print(f"✗ 模型不存在: {model_path}")
-        print("  请先运行: python scripts/download_model.py")
+        print(f"Model not found: {model_path}")
+        print("  Please run first: python scripts/download_model.py")
         return 1
-    
-    print(f"✓ 模型路径: {model_path}")
-    
-    # 初始化 Loader
-    print("\n初始化 NIXL GDS Loader...")
+
+    print(f"Model path: {model_path}")
+
+    # Initialize Loader
+    print("\nInitializing NIXL GDS Loader...")
     try:
         loader = NIXLGDSLoader(model_path, device=device)
-        print(f"✓ Loader 初始化成功")
-        print(f"  NIXL 状态: {'可用' if loader.nixl_available else '不可用（将使用回退）'}")
+        print(f"Loader initialized successfully")
+        print(f"  NIXL status: {'available' if loader.nixl_available else 'unavailable (will use fallback)'}")
     except Exception as e:
-        print(f"✗ Loader 初始化失败: {e}")
+        print(f"Loader initialization failed: {e}")
         return 1
-    
-    # 加载模型
-    print("\n开始加载模型...")
+
+    # Load model
+    print("\nLoading model...")
     try:
         model = loader.load_model(torch_dtype=torch.bfloat16)
-        print("✓ 模型加载成功")
+        print("Model loaded successfully")
     except Exception as e:
-        print(f"✗ 模型加载失败: {e}")
+        print(f"Model loading failed: {e}")
         import traceback
         traceback.print_exc()
         return 1
-    
-    # 输出统计
+
+    # Print stats
     print(f"\n{'='*70}")
-    print("【性能统计 - 记录这些数据】")
+    print("Performance Stats")
     print(f"{'='*70}")
-    print(f"✓ 加载时间: {loader.load_stats['model_load_time']:.4f} 秒")
-    print(f"✓ GPU 内存: {loader.load_stats['gpu_memory_mb']:.2f} MB")
-    print(f"✓ CPU 内存: {loader.load_stats['cpu_memory_mb']:.2f} MB")
-    print(f"✓ NIXL 状态: {'启用' if loader.nixl_available else '回退模式'}")
-    
-    # 获取模型信息
+    print(f"  Load time:   {loader.load_stats['model_load_time']:.4f}s")
+    print(f"  GPU memory:  {loader.load_stats['gpu_memory_mb']:.2f} MB")
+    print(f"  CPU memory:  {loader.load_stats['cpu_memory_mb']:.2f} MB")
+    print(f"  NIXL status: {'enabled' if loader.nixl_available else 'fallback mode'}")
+
+    # Get model info
     info = loader.get_model_info()
-    print(f"\n模型信息:")
-    print(f"  参数量: {info['num_parameters']:,}")
-    print(f"  参数大小: {info['param_size_mb']:.2f} MB")
+    print(f"\nModel Info:")
+    print(f"  Parameters:  {info['num_parameters']:,}")
+    print(f"  Param size:  {info['param_size_mb']:.2f} MB")
     print(f"{'='*70}")
-    
-    # 测试推理
-    print("\n测试推理...")
+
+    # Test inference
+    print("\nRunning inference test...")
     try:
         output = loader.test_inference(
             prompt="Hello, how are you?",
             max_new_tokens=20
         )
-        print("✓ 推理成功")
+        print("Inference successful")
     except Exception as e:
-        print(f"✗ 推理失败: {e}")
+        print(f"Inference failed: {e}")
         import traceback
         traceback.print_exc()
         return 1
-    
+
     print("\n" + "="*70)
-    print("🎉 所有测试通过！")
+    print("All tests passed!")
     print("="*70 + "\n")
-    
+
     return 0
 
 if __name__ == "__main__":

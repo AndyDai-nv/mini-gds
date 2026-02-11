@@ -35,34 +35,34 @@ def main():
     device = args.device
 
     print("\n" + "="*70)
-    print("测试 HuggingFace Loader")
+    print("Testing HuggingFace Loader")
     print("="*70)
-    print(f"模型大小: {args.model}")
-    print(f"模型路径: {model_path}")
-    print(f"设备: {device}")
+    print(f"Model size: {args.model}")
+    print(f"Model path: {model_path}")
+    print(f"Device:     {device}")
     print("="*70)
 
-    # 检查模型路径
+    # Check model path
     if not Path(model_path).exists():
-        print(f"\n✗ 模型不存在: {model_path}")
+        print(f"\nModel not found: {model_path}")
         return 1
 
-    # 初始化
+    # Initialize
     loader = HFLoader(model_path, device=device)
 
-    # 加载模型
+    # Load model
     model = loader.load_model(torch_dtype=torch.bfloat16)
 
-    # 输出统计
+    # Print stats
     print(f"\n{'='*70}")
-    print("【记录这些数据】")
+    print("Performance Stats")
     print(f"{'='*70}")
-    print(f"✓ 加载时间: {loader.load_stats['model_load_time']:.4f} 秒")
-    print(f"✓ GPU 内存: {loader.load_stats['gpu_memory_mb']:.2f} MB")
-    print(f"✓ CPU 内存: {loader.load_stats['cpu_memory_mb']:.2f} MB")
+    print(f"  Load time:   {loader.load_stats['model_load_time']:.4f}s")
+    print(f"  GPU memory:  {loader.load_stats['gpu_memory_mb']:.2f} MB")
+    print(f"  CPU memory:  {loader.load_stats['cpu_memory_mb']:.2f} MB")
     print(f"{'='*70}\n")
 
-    # 测试推理
+    # Test inference
     loader.test_inference("Hello, what is the capital of China?", max_new_tokens=20)
 
     return 0
