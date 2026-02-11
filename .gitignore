@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Models and data
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Benchmark results
+benchmark_results*.json
+*.log
+
+# Profiling
+*.prof
+*.prof.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# Packages
+*.deb
+
+# Project-specific excludes
+.project_structure
+NIXL_GDS_IMPLEMENTATION_DETAILS.md
+WORK_LOG.md
+PROFILING_ANALYSIS.md

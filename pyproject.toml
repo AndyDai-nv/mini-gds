@@ -1,0 +1,68 @@
+[project]
+name = "mini-gds"
+version = "0.1.0"
+description = "High-performance model loader using NVIDIA GPUDirect Storage"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+requires-python = ">=3.10"
+keywords = ["gds", "gpu", "model-loading", "pytorch", "transformers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "safetensors>=0.4.0",
+    "accelerate>=0.27.0",
+    "huggingface-hub>=0.20.0",
+    "numpy>=1.24.0",
+    "psutil>=5.9.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "ipython>=8.12.0",
+]
+nixl = [
+    "nixl[cu12]>=0.4.0",  # NVIDIA Inference Xfer Library with CUDA 12.x
+]
+# Recommended: Install all performance optimizations
+all = [
+    "nixl[cu12]>=0.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/mini-gds"
+Documentation = "https://github.com/yourusername/mini-gds/blob/main/README.md"
+Repository = "https://github.com/yourusername/mini-gds"
+Issues = "https://github.com/yourusername/mini-gds/issues"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
