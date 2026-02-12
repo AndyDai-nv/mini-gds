@@ -32,8 +32,8 @@ class NIXLGDSLoader:
     # GDS requires 4KB-aligned file offsets and transfer sizes
     GDS_ALIGNMENT = 4096
     # Max chunk size per GDS batch I/O (must be <= cuFile per_buffer_cache_size).
-    # Default cufile.json sets per_buffer_cache_size_kb=1024 (1MB).
-    GDS_MAX_CHUNK_SIZE = 1024 * 1024  # 1MB
+    # Project cufile.json sets per_buffer_cache_size_kb=16384 (16MB).
+    GDS_MAX_CHUNK_SIZE = 16 * 1024 * 1024  # 16MB
 
     # Safetensors dtype string -> torch dtype mapping
     SAFETENSORS_DTYPE_MAP = {
@@ -61,14 +61,24 @@ class NIXLGDSLoader:
         self.model = None
         self.config = None
         self.load_stats: Dict[str, Any] = {}
+        self._chunk_buffer = None  # Reusable GPU buffer for chunked transfers
+
+        # Set project cufile.json before any NIXL/cuFile init
+        self._setup_cufile_env()
+        self._read_cufile_config()
+
         self.nixl_available = self._check_nixl_available()
         self.nixl_agent = None
 
-        # Read per_buffer_cache_size from cufile.json if available
-        self._read_cufile_config()
+    def _setup_cufile_env(self):
+        """Point cuFile to project-level cufile.json with optimized settings."""
+        if "CUFILE_ENV_PATH_JSON" not in os.environ:
+            project_cufile = Path(__file__).resolve().parent.parent.parent / "configs" / "cufile.json"
+            if project_cufile.exists():
+                os.environ["CUFILE_ENV_PATH_JSON"] = str(project_cufile)
 
     def _read_cufile_config(self):
-        """Read GDS_MAX_CHUNK_SIZE from /etc/cufile.json if available."""
+        """Read GDS_MAX_CHUNK_SIZE from cufile.json if available."""
         cufile_path = os.environ.get("CUFILE_ENV_PATH_JSON", "/etc/cufile.json")
         try:
             with open(cufile_path) as f:
@@ -435,8 +445,13 @@ class NIXLGDSLoader:
                 aligned_size = ((prefix_bytes + useful_bytes + self.GDS_ALIGNMENT - 1)
                                 // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
 
-                # Temporary aligned buffer for this chunk
-                chunk_buffer = torch.empty(aligned_size, dtype=torch.uint8, device=self.device)
+                # Reuse chunk buffer across calls to avoid repeated GPU allocation
+                if self._chunk_buffer is None or self._chunk_buffer.numel() < aligned_size:
+                    self._chunk_buffer = torch.empty(
+                        max(aligned_size, self.GDS_MAX_CHUNK_SIZE),
+                        dtype=torch.uint8, device=self.device
+                    )
+                chunk_buffer = self._chunk_buffer[:aligned_size]
 
                 # Transfer aligned chunk from file to GPU
                 self._nixl_transfer_chunk(fd, aligned_offset, chunk_buffer, aligned_size)
