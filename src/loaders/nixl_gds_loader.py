@@ -29,6 +29,26 @@ class NIXLGDSLoader:
     selection and optimized file-to-GPU transfers.
     """
 
+    # GDS requires 4KB-aligned file offsets and transfer sizes
+    GDS_ALIGNMENT = 4096
+    # Max chunk size per GDS batch I/O (must be <= cuFile per_buffer_cache_size).
+    # Default cufile.json sets per_buffer_cache_size_kb=1024 (1MB).
+    GDS_MAX_CHUNK_SIZE = 1024 * 1024  # 1MB
+
+    # Safetensors dtype string -> torch dtype mapping
+    SAFETENSORS_DTYPE_MAP = {
+        "F64": torch.float64,
+        "F32": torch.float32,
+        "F16": torch.float16,
+        "BF16": torch.bfloat16,
+        "I64": torch.int64,
+        "I32": torch.int32,
+        "I16": torch.int16,
+        "I8": torch.int8,
+        "U8": torch.uint8,
+        "BOOL": torch.bool,
+    }
+
     def __init__(self, model_path: str, device: str = "cuda:0"):
         """Initialize NIXL GDS loader.
 
@@ -44,6 +64,31 @@ class NIXLGDSLoader:
         self.nixl_available = self._check_nixl_available()
         self.nixl_agent = None
 
+        # Read per_buffer_cache_size from cufile.json if available
+        self._read_cufile_config()
+
+    def _read_cufile_config(self):
+        """Read GDS_MAX_CHUNK_SIZE from /etc/cufile.json if available."""
+        cufile_path = os.environ.get("CUFILE_ENV_PATH_JSON", "/etc/cufile.json")
+        try:
+            with open(cufile_path) as f:
+                # cufile.json uses C-style comments, strip them
+                lines = []
+                for line in f:
+                    stripped = line.lstrip()
+                    if not stripped.startswith("//"):
+                        # Remove inline comments
+                        comment_pos = line.find("//")
+                        if comment_pos >= 0:
+                            line = line[:comment_pos]
+                        lines.append(line)
+                content = "".join(lines)
+                config = json.loads(content)
+            cache_kb = config.get("properties", {}).get("per_buffer_cache_size_kb", 1024)
+            self.GDS_MAX_CHUNK_SIZE = cache_kb * 1024
+        except Exception:
+            pass  # Use default 1MB
+
     def _check_nixl_available(self) -> bool:
         """Check if NIXL is available (lightweight check, no agent creation)."""
         try:
@@ -51,10 +96,9 @@ class NIXLGDSLoader:
 
             print("✓ NIXL library found")
 
-            # Check if GDS plugin exists (no agent creation)
+            # Check if we can import, don't create agent yet
+            # Agent creation is expensive (~1-2s), defer to actual load time
             try:
-                # Just check if we can import, don't create agent yet
-                # Agent creation is expensive (~1-2s), defer to actual load time
                 print("✓ NIXL import successful")
                 return True
 
@@ -118,6 +162,7 @@ class NIXLGDSLoader:
         print(f"Device: {self.device}")
         print(f"Dtype: {torch_dtype}")
         print(f"NIXL Available: {self.nixl_available}")
+        print(f"GDS chunk size: {self.GDS_MAX_CHUNK_SIZE // 1024}KB")
         print(f"{'='*60}\n")
 
         # Record initial memory
@@ -206,13 +251,6 @@ class NIXLGDSLoader:
             print("  Loading weights via safetensors (NIXL not available)...")
             self._load_weights_fallback_method(safetensors_files, torch_dtype)
 
-        # Step 3: Handle non-checkpoint buffers (e.g., rotary embeddings)
-        #print("  Initializing remaining buffers on GPU...")
-        #self._materialize_remaining_buffers(torch_dtype)
-
-        # Verify model is on correct device
-        #self.model = self.model.to(self.device)
-
         elapsed = time.perf_counter() - start_time
         print(f"  Total load time: {elapsed:.4f}s")
         return elapsed
@@ -291,6 +329,51 @@ class NIXLGDSLoader:
 
         return header_len, metadata
 
+    def _nixl_transfer_chunk(self, fd, file_offset, gpu_buffer, chunk_size):
+        """Transfer a single aligned chunk from file to GPU via NIXL GDS.
+
+        Args:
+            fd: Open file descriptor
+            file_offset: 4KB-aligned file offset
+            gpu_buffer: Destination GPU tensor (uint8, size == chunk_size)
+            chunk_size: 4KB-aligned transfer size
+        """
+        import time
+
+        file_list = [(file_offset, chunk_size, fd, f"chunk_{file_offset}")]
+        file_descs = self.nixl_agent.register_memory(file_list, "FILE")
+        file_xfer_descs = file_descs.trim()
+
+        gpu_descs = self.nixl_agent.register_memory(gpu_buffer, "VRAM")
+        gpu_xfer_descs = self.nixl_agent.get_xfer_descs(gpu_buffer, "VRAM")
+
+        xfer_handle = self.nixl_agent.initialize_xfer(
+            "READ", gpu_xfer_descs, file_xfer_descs, self.nixl_agent.name
+        )
+
+        if not xfer_handle:
+            raise RuntimeError("Failed to initialize NIXL transfer")
+
+        state = self.nixl_agent.transfer(xfer_handle)
+        if state == "ERR":
+            raise RuntimeError(f"Failed to start NIXL transfer at offset {file_offset}")
+
+        max_wait_seconds = 30
+        wait_start = time.time()
+        while True:
+            state = self.nixl_agent.check_xfer_state(xfer_handle)
+            if state == "DONE":
+                break
+            elif state == "ERR":
+                raise RuntimeError(f"NIXL transfer failed at offset {file_offset}")
+            if time.time() - wait_start > max_wait_seconds:
+                raise TimeoutError(f"NIXL transfer timeout at offset {file_offset}")
+            time.sleep(0.001)
+
+        self.nixl_agent.release_xfer_handle(xfer_handle)
+        self.nixl_agent.deregister_memory(file_descs)
+        self.nixl_agent.deregister_memory(gpu_descs)
+
     def _load_tensor_with_fd(
         self,
         fd: int,
@@ -300,11 +383,16 @@ class NIXLGDSLoader:
     ) -> torch.Tensor:
         """Load a single tensor using NIXL file-to-GPU transfer with existing fd.
 
+        Handles two GDS constraints:
+        1. File offsets and sizes must be 4KB-aligned
+        2. Each I/O request must fit within cuFile's per_buffer_cache_size (default 1MB)
+
+        Large tensors are split into aligned chunks and reassembled on GPU.
+
         Args:
             fd: Open file descriptor (from os.open)
             header_len: Length of safetensors header in bytes
             metadata: Tensor metadata from safetensors header
-                     {"dtype": "F32", "shape": [768, 768], "data_offsets": [0, 2359296]}
             torch_dtype: Target PyTorch dtype
 
         Returns:
@@ -313,83 +401,58 @@ class NIXLGDSLoader:
         if self.nixl_agent is None:
             raise RuntimeError("NIXL agent not initialized")
 
-        import time
-
         # Parse metadata
         shape = tuple(metadata["shape"])
+        file_dtype = self.SAFETENSORS_DTYPE_MAP.get(metadata.get("dtype", ""), torch_dtype)
         data_offsets = metadata["data_offsets"]
         begin_offset = data_offsets[0]
         end_offset = data_offsets[1]
         tensor_size_bytes = end_offset - begin_offset
 
-        # Calculate absolute file offset (8 bytes + header_len + data_offset)
+        # Absolute file offset of tensor data
         absolute_file_offset = 8 + header_len + begin_offset
 
-        # Allocate GPU tensor
-        tensor = torch.empty(shape, dtype=torch_dtype, device=self.device)
+        # Allocate destination buffer on GPU (raw bytes for the full tensor)
+        result_buffer = torch.empty(tensor_size_bytes, dtype=torch.uint8, device=self.device)
+        bytes_loaded = 0
 
-        # Use provided file descriptor (no need to open/close)
         try:
-            # Register file: (offset, size, fd, label)
-            file_list = [(absolute_file_offset, tensor_size_bytes, fd, f"tensor_{absolute_file_offset}")]
-            file_descs = self.nixl_agent.register_memory(file_list, "FILE")
+            while bytes_loaded < tensor_size_bytes:
+                # Current position in file
+                cur_file_offset = absolute_file_offset + bytes_loaded
+                remaining = tensor_size_bytes - bytes_loaded
 
-            if file_descs is None:
-                raise RuntimeError("Failed to register file with NIXL")
+                # Align offset down to 4KB boundary
+                aligned_offset = (cur_file_offset // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
+                prefix_bytes = cur_file_offset - aligned_offset
 
-            # Get file transfer descriptors
-            file_xfer_descs = file_descs.trim()
+                # How much useful data to read in this chunk (capped by max chunk size)
+                useful_bytes = min(remaining, self.GDS_MAX_CHUNK_SIZE)
 
-            # Register GPU tensor
-            gpu_descs = self.nixl_agent.register_memory(tensor, "VRAM")
+                # Aligned total read size (prefix padding + useful data, rounded up to 4KB)
+                aligned_size = ((prefix_bytes + useful_bytes + self.GDS_ALIGNMENT - 1)
+                                // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
 
-            if gpu_descs is None:
-                raise RuntimeError("Failed to register GPU memory with NIXL")
+                # Temporary aligned buffer for this chunk
+                chunk_buffer = torch.empty(aligned_size, dtype=torch.uint8, device=self.device)
 
-            # Get GPU transfer descriptors
-            gpu_xfer_descs = self.nixl_agent.get_xfer_descs(tensor, "VRAM")
+                # Transfer aligned chunk from file to GPU
+                self._nixl_transfer_chunk(fd, aligned_offset, chunk_buffer, aligned_size)
 
-            # Initialize transfer: READ from file to GPU
-            # For local transfers, remote_agent is self
-            xfer_handle = self.nixl_agent.initialize_xfer(
-                "READ",                    # Read from file
-                gpu_xfer_descs,           # Destination (GPU)
-                file_xfer_descs,          # Source (file)
-                self.nixl_agent.name      # Local transfer
-            )
+                # Copy useful data from chunk to result buffer
+                result_buffer[bytes_loaded:bytes_loaded + useful_bytes] = \
+                    chunk_buffer[prefix_bytes:prefix_bytes + useful_bytes]
 
-            if not xfer_handle:
-                raise RuntimeError("Failed to initialize NIXL transfer")
+                bytes_loaded += useful_bytes
 
-            # Execute transfer (async DMA: file → GPU)
-            state = self.nixl_agent.transfer(xfer_handle)
-            if state == "ERR":
-                raise RuntimeError("Failed to start NIXL transfer")
+            # Reinterpret raw bytes as the correct dtype and shape
+            tensor = result_buffer.view(file_dtype).reshape(shape)
 
-            # Wait for completion
-            max_wait_seconds = 30
-            wait_start = time.time()
-
-            while True:
-                state = self.nixl_agent.check_xfer_state(xfer_handle)
-
-                if state == "DONE":
-                    break
-                elif state == "ERR":
-                    raise RuntimeError(f"NIXL transfer failed for tensor at offset {absolute_file_offset}")
-
-                if time.time() - wait_start > max_wait_seconds:
-                    raise TimeoutError(f"NIXL transfer timeout after {max_wait_seconds}s")
-
-                time.sleep(0.001)  # 1ms polling
-
-            # Release resources
-            self.nixl_agent.release_xfer_handle(xfer_handle)
-            self.nixl_agent.deregister_memory(file_descs)
-            self.nixl_agent.deregister_memory(gpu_descs)
+            # Convert dtype if file dtype differs from target
+            if file_dtype != torch_dtype:
+                tensor = tensor.to(dtype=torch_dtype)
 
         except Exception as e:
-            # Let caller handle the error (don't close fd here)
             raise
 
         return tensor
@@ -408,15 +471,15 @@ class NIXLGDSLoader:
                 set_module_tensor_to_device(
                     self.model, key, self.device, value=tensor
                 )
-    
+
     def _materialize_remaining_buffers(self, torch_dtype: torch.dtype):
         """Initialize buffers that are not in the checkpoint.
-        
+
         Some models have buffers (like rotary embedding inv_freq) that are
         computed during __init__ and not saved. We need to recreate these.
         """
         device = torch.device(self.device)
-        
+
         for name, module in self.model.named_modules():
             # Handle rotary embeddings (common in Llama/Qwen models)
             if hasattr(module, 'inv_freq') and module.inv_freq.device.type == 'meta':
@@ -425,7 +488,7 @@ class NIXLGDSLoader:
                 base = module.base if hasattr(module, 'base') else 10000.0
                 inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
                 module.register_buffer('inv_freq', inv_freq.to(device=device, dtype=torch_dtype), persistent=False)
-            
+
             # Handle any other meta tensors in parameters
             for param_name, param in module.named_parameters(recurse=False):
                 if param.device.type == 'meta':
@@ -434,7 +497,7 @@ class NIXLGDSLoader:
                         torch.zeros(param.shape, dtype=torch_dtype, device=device)
                     )
                     setattr(module, param_name, new_param)
-            
+
             # Handle any other meta tensors in buffers
             for buf_name, buf in module.named_buffers(recurse=False):
                 if buf is not None and buf.device.type == 'meta':
