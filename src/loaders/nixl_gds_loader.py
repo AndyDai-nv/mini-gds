@@ -121,6 +121,21 @@ class NIXLGDSLoader:
             print("  Install with: pip install nixl[cu12]")
             return False
 
+    @staticmethod
+    def _get_nvfs_batch_io_count() -> int:
+        """Read BatchIO count from nvidia-fs stats."""
+        try:
+            with open("/proc/driver/nvidia-fs/stats") as f:
+                for line in f:
+                    if line.strip().startswith("Ops"):
+                        # "Ops  : Read=0 Write=0 BatchIO=0"
+                        for part in line.split():
+                            if part.startswith("BatchIO="):
+                                return int(part.split("=")[1])
+        except (FileNotFoundError, ValueError):
+            pass
+        return -1  # Cannot determine
+
     def _initialize_nixl_agent(self):
         """Initialize NIXL agent for transfers."""
         if not self.nixl_available:
@@ -268,13 +283,17 @@ class NIXLGDSLoader:
     def _load_weights_with_nixl_gds(self, safetensors_files: list, torch_dtype: torch.dtype):
         """Load weights using NIXL GDS - true file-to-GPU DMA transfers.
 
-        Optimized to reuse file descriptor across all tensors.
+        After the first file, checks nvidia-fs stats to detect compat mode.
+        If running in compat mode (POSIX fallback), raises to switch to
+        direct safetensors loading which is faster without true GDS.
         """
         from accelerate.utils import set_module_tensor_to_device
         import os
         import gc
 
-        for sf_file in safetensors_files:
+        batch_io_before = self._get_nvfs_batch_io_count()
+
+        for file_idx, sf_file in enumerate(safetensors_files):
             print(f"    Loading: {sf_file.name} (via NIXL GDS)")
 
             # Parse safetensors file header once
@@ -312,6 +331,20 @@ class NIXLGDSLoader:
                 # Clear metadata to free memory
                 del tensors_metadata
                 gc.collect()
+
+            # After first file: check if true GDS or compat mode
+            if file_idx == 0 and batch_io_before >= 0:
+                batch_io_after = self._get_nvfs_batch_io_count()
+                if batch_io_after == batch_io_before:
+                    print("  ⚠ Detected cuFile compat mode (no true GDS I/O)")
+                    print("    Switching to direct safetensors for remaining files...")
+                    # Load remaining files via safetensors (faster in compat mode)
+                    remaining_files = safetensors_files[file_idx + 1:]
+                    if remaining_files:
+                        self._load_weights_fallback_method(remaining_files, torch_dtype)
+                    return
+                else:
+                    print(f"  ✓ True GDS active (BatchIO: {batch_io_before} → {batch_io_after})")
 
     def _parse_safetensors_header(self, file_path: Path) -> tuple:
         """Parse safetensors file header to get tensor metadata.
