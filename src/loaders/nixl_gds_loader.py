@@ -426,8 +426,10 @@ class NIXLGDSLoader:
                 aligned_offset = (cur_file_offset // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
                 prefix_bytes = cur_file_offset - aligned_offset
 
-                # How much useful data to read in this chunk (capped by max chunk size)
-                useful_bytes = min(remaining, self.GDS_MAX_CHUNK_SIZE)
+                # How much useful data to read in this chunk.
+                # aligned_size = round_up(prefix_bytes + useful_bytes) must stay <= GDS_MAX_CHUNK_SIZE,
+                # so cap useful_bytes to leave room for the prefix padding.
+                useful_bytes = min(remaining, self.GDS_MAX_CHUNK_SIZE - prefix_bytes)
 
                 # Aligned total read size (prefix padding + useful data, rounded up to 4KB)
                 aligned_size = ((prefix_bytes + useful_bytes + self.GDS_ALIGNMENT - 1)
