@@ -1,0 +1,21 @@
+usage: colossus [-h]
+                {login,logout,whereami,whoami,version,upgrade,baremetal,bm,cluster,config,healthcheck,hc,user}
+                ...
+
+positional arguments:
+  {login,logout,whereami,whoami,version,upgrade,baremetal,bm,cluster,config,healthcheck,hc,user}
+    login               Login to colossus CLI
+    logout              Logout user and exit colossus CLI
+    whereami            Get current server
+    whoami              Get current login user
+    version             Get CLI version
+    upgrade             Upgrade CLI to latest or specific version
+    baremetal (bm)      Manage baremetal resources and operations
+    cluster             Manage cluster resources and operations
+    config              Manage configuration settings
+    healthcheck (hc)    Manage health check operations
+    user                Manage user information
+
+options:
+  -h, --help            show this help message and exit
+colossus: error: argument {login,logout,whereami,whoami,version,upgrade,baremetal,bm,cluster,config,healthcheck,hc,user}: invalid choice: 'list' (choose from 'login', 'logout', 'whereami', 'whoami', 'version', 'upgrade', 'baremetal', 'bm', 'cluster', 'config', 'healthcheck', 'hc', 'user')
