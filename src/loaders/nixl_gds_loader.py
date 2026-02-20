@@ -303,8 +303,8 @@ class NIXLGDSLoader:
             # Parse safetensors file header once
             header_len, tensors_metadata = self._parse_safetensors_header(sf_file)
 
-            # Open file once for all tensors
-            fd = os.open(str(sf_file), os.O_RDONLY)
+            # Open file with O_DIRECT — required for true GDS (non-compat) I/O
+            fd = os.open(str(sf_file), os.O_RDONLY | os.O_DIRECT)
 
             try:
                 # Load each tensor using the same file descriptor

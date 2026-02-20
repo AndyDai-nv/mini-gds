@@ -1,6 +1,6 @@
 {
     "logging": {
-        "level": "ERROR"
+        "level": "TRACE"
     },
     "profile": {
         "nvtx": false,
