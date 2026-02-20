@@ -385,15 +385,18 @@ class NIXLGDSLoader:
 
         return header_len, metadata
 
-    def _nixl_transfer(self, fd, file_offset, gpu_buffer, size):
-        """Transfer data from file to GPU via NIXL GDS.
+    def _nixl_transfer_chunk(self, fd, file_offset, gpu_buffer, chunk_size):
+        """Transfer a single aligned chunk from file to GPU via NIXL GDS.
 
-        One register + one transfer + one deregister per call.
-        NIXL handles internal chunking for large transfers.
+        Args:
+            fd: Open file descriptor
+            file_offset: 4KB-aligned file offset
+            gpu_buffer: Destination GPU tensor (uint8, size == chunk_size)
+            chunk_size: 4KB-aligned transfer size
         """
         import time
 
-        file_list = [(file_offset, size, fd, f"region_{file_offset}")]
+        file_list = [(file_offset, chunk_size, fd, f"chunk_{file_offset}")]
         file_descs = self.nixl_agent.register_memory(file_list, "FILE")
         file_xfer_descs = file_descs.trim()
 
@@ -411,7 +414,7 @@ class NIXLGDSLoader:
         if state == "ERR":
             raise RuntimeError(f"Failed to start NIXL transfer at offset {file_offset}")
 
-        max_wait_seconds = 60
+        max_wait_seconds = 30
         wait_start = time.time()
         while True:
             state = self.nixl_agent.check_xfer_state(xfer_handle)
@@ -434,10 +437,22 @@ class NIXLGDSLoader:
         metadata: dict,
         torch_dtype: torch.dtype
     ) -> torch.Tensor:
-        """Load a single tensor using NIXL file-to-GPU transfer.
+        """Load a single tensor using NIXL file-to-GPU transfer with existing fd.
 
-        One register + one transfer per tensor (no manual chunking).
-        4KB alignment handled by reading a slightly larger aligned region.
+        Handles two GDS constraints:
+        1. File offsets and sizes must be 4KB-aligned
+        2. Each I/O request must fit within cuFile's per_buffer_cache_size (default 1MB)
+
+        Large tensors are split into aligned chunks and reassembled on GPU.
+
+        Args:
+            fd: Open file descriptor (from os.open)
+            header_len: Length of safetensors header in bytes
+            metadata: Tensor metadata from safetensors header
+            torch_dtype: Target PyTorch dtype
+
+        Returns:
+            Tensor loaded directly to GPU via NIXL GDS (DMA transfer)
         """
         if self.nixl_agent is None:
             raise RuntimeError("NIXL agent not initialized")
@@ -453,25 +468,55 @@ class NIXLGDSLoader:
         # Absolute file offset of tensor data
         absolute_file_offset = 8 + header_len + begin_offset
 
-        # Align offset down and size up to 4KB boundary
-        aligned_offset = (absolute_file_offset // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
-        prefix_bytes = absolute_file_offset - aligned_offset
-        aligned_size = ((prefix_bytes + tensor_size_bytes + self.GDS_ALIGNMENT - 1)
-                        // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
+        # Allocate destination buffer on GPU (raw bytes for the full tensor)
+        result_buffer = torch.empty(tensor_size_bytes, dtype=torch.uint8, device=self.device)
+        bytes_loaded = 0
 
-        # Allocate aligned transfer buffer on GPU
-        transfer_buf = torch.empty(aligned_size, dtype=torch.uint8, device=self.device)
+        try:
+            while bytes_loaded < tensor_size_bytes:
+                # Current position in file
+                cur_file_offset = absolute_file_offset + bytes_loaded
+                remaining = tensor_size_bytes - bytes_loaded
 
-        # Single transfer for the whole tensor
-        self._nixl_transfer(fd, aligned_offset, transfer_buf, aligned_size)
+                # Align offset down to 4KB boundary
+                aligned_offset = (cur_file_offset // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
+                prefix_bytes = cur_file_offset - aligned_offset
 
-        # Extract tensor data (skip alignment prefix)
-        tensor = transfer_buf[prefix_bytes:prefix_bytes + tensor_size_bytes] \
-            .view(file_dtype).reshape(shape)
+                # How much useful data to read in this chunk.
+                # aligned_size = round_up(prefix_bytes + useful_bytes) must stay <= GDS_MAX_CHUNK_SIZE,
+                # so cap useful_bytes to leave room for the prefix padding.
+                useful_bytes = min(remaining, self.GDS_MAX_CHUNK_SIZE - prefix_bytes)
 
-        # Convert dtype if needed
-        if file_dtype != torch_dtype:
-            tensor = tensor.to(dtype=torch_dtype)
+                # Aligned total read size (prefix padding + useful data, rounded up to 4KB)
+                aligned_size = ((prefix_bytes + useful_bytes + self.GDS_ALIGNMENT - 1)
+                                // self.GDS_ALIGNMENT) * self.GDS_ALIGNMENT
+
+                # Reuse chunk buffer across calls to avoid repeated GPU allocation
+                if self._chunk_buffer is None or self._chunk_buffer.numel() < aligned_size:
+                    self._chunk_buffer = torch.empty(
+                        max(aligned_size, self.GDS_MAX_CHUNK_SIZE),
+                        dtype=torch.uint8, device=self.device
+                    )
+                chunk_buffer = self._chunk_buffer[:aligned_size]
+
+                # Transfer aligned chunk from file to GPU
+                self._nixl_transfer_chunk(fd, aligned_offset, chunk_buffer, aligned_size)
+
+                # Copy useful data from chunk to result buffer
+                result_buffer[bytes_loaded:bytes_loaded + useful_bytes] = \
+                    chunk_buffer[prefix_bytes:prefix_bytes + useful_bytes]
+
+                bytes_loaded += useful_bytes
+
+            # Reinterpret raw bytes as the correct dtype and shape
+            tensor = result_buffer.view(file_dtype).reshape(shape)
+
+            # Convert dtype if file dtype differs from target
+            if file_dtype != torch_dtype:
+                tensor = tensor.to(dtype=torch_dtype)
+
+        except Exception as e:
+            raise
 
         return tensor
 
