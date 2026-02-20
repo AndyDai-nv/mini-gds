@@ -122,23 +122,28 @@ class NIXLGDSLoader:
             return False
 
     @staticmethod
-    def _get_nvfs_read_count() -> int:
-        """Read the Read op count from nvidia-fs stats.
+    def _get_nvfs_io_stats():
+        """Read nvidia-fs IO stats. Returns (enabled, read_count).
 
-        NIXL single transfers use cuFileRead() which increments the Read
-        counter, not BatchIO.
+        IO stats must be enabled at the kernel level for Ops counters to
+        update.  When disabled, counters stay at 0 even with true GDS I/O,
+        so we cannot use them for compat-mode detection.
         """
+        enabled = False
+        read_count = -1
         try:
             with open("/proc/driver/nvidia-fs/stats") as f:
                 for line in f:
-                    if line.strip().startswith("Ops"):
-                        # "Ops  : Read=0 Write=0 BatchIO=0"
-                        for part in line.split():
+                    stripped = line.strip()
+                    if stripped.startswith("IO stats:"):
+                        enabled = "Enabled" in stripped.split(",")[0]
+                    elif stripped.startswith("Ops"):
+                        for part in stripped.split():
                             if part.startswith("Read="):
-                                return int(part.split("=")[1])
+                                read_count = int(part.split("=")[1])
         except (FileNotFoundError, ValueError):
             pass
-        return -1  # Cannot determine
+        return enabled, read_count
 
     def _initialize_nixl_agent(self):
         """Initialize NIXL agent for transfers."""
@@ -295,7 +300,7 @@ class NIXLGDSLoader:
         import os
         import gc
 
-        read_ops_before = self._get_nvfs_read_count()
+        io_stats_enabled, read_ops_before = self._get_nvfs_io_stats()
 
         for file_idx, sf_file in enumerate(safetensors_files):
             print(f"    Loading: {sf_file.name} (via NIXL GDS)")
@@ -303,7 +308,7 @@ class NIXLGDSLoader:
             # Parse safetensors file header once
             header_len, tensors_metadata = self._parse_safetensors_header(sf_file)
 
-            # Open file with O_DIRECT — required for true GDS (non-compat) I/O
+            # Open file with O_DIRECT for true GDS DMA transfers
             fd = os.open(str(sf_file), os.O_RDONLY | os.O_DIRECT)
 
             try:
@@ -337,18 +342,22 @@ class NIXLGDSLoader:
                 gc.collect()
 
             # After first file: check if true GDS or compat mode
-            if file_idx == 0 and read_ops_before >= 0:
-                read_ops_after = self._get_nvfs_read_count()
-                if read_ops_after == read_ops_before:
-                    print("  ⚠ Detected cuFile compat mode (no true GDS I/O)")
-                    print("    Switching to direct safetensors for remaining files...")
-                    # Load remaining files via safetensors (faster in compat mode)
-                    remaining_files = safetensors_files[file_idx + 1:]
-                    if remaining_files:
-                        self._load_weights_fallback_method(remaining_files, torch_dtype)
-                    return
-                else:
-                    print(f"  ✓ True GDS active (Read ops: {read_ops_before} → {read_ops_after})")
+            # Only possible when kernel IO stats are enabled; otherwise skip
+            if file_idx == 0:
+                if not io_stats_enabled:
+                    print("  ℹ nvidia-fs IO stats disabled — skipping compat mode detection")
+                    print("    (GDS backend created successfully; assuming true GDS)")
+                elif read_ops_before >= 0:
+                    _, read_ops_after = self._get_nvfs_io_stats()
+                    if read_ops_after == read_ops_before:
+                        print("  ⚠ Detected cuFile compat mode (no true GDS I/O)")
+                        print("    Switching to direct safetensors for remaining files...")
+                        remaining_files = safetensors_files[file_idx + 1:]
+                        if remaining_files:
+                            self._load_weights_fallback_method(remaining_files, torch_dtype)
+                        return
+                    else:
+                        print(f"  ✓ True GDS active (Read ops: {read_ops_before} → {read_ops_after})")
 
     def _parse_safetensors_header(self, file_path: Path) -> tuple:
         """Parse safetensors file header to get tensor metadata.
