@@ -74,19 +74,23 @@ def main():
         return 1
 
     # Print stats
+    info = loader.get_model_info()
+    load_time = loader.load_stats['model_load_time']
+    param_size_mb = info['param_size_mb']
+    bandwidth_gbs = (param_size_mb / 1024) / load_time if load_time > 0 else 0
+
     print(f"\n{'='*70}")
     print("Performance Stats")
     print(f"{'='*70}")
-    print(f"  Load time:   {loader.load_stats['model_load_time']:.4f}s")
+    print(f"  Load time:   {load_time:.4f}s")
+    print(f"  Param size:  {param_size_mb:.2f} MB")
+    print(f"  Bandwidth:   {bandwidth_gbs:.3f} GB/s")
     print(f"  GPU memory:  {loader.load_stats['gpu_memory_mb']:.2f} MB")
     print(f"  CPU memory:  {loader.load_stats['cpu_memory_mb']:.2f} MB")
     print(f"  NIXL status: {'enabled' if loader.nixl_available else 'fallback mode'}")
 
-    # Get model info
-    info = loader.get_model_info()
     print(f"\nModel Info:")
     print(f"  Parameters:  {info['num_parameters']:,}")
-    print(f"  Param size:  {info['param_size_mb']:.2f} MB")
     print(f"{'='*70}")
 
     # Test inference
